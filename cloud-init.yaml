@@ -1,0 +1,35 @@
+#cloud-config
+#
+# Hetzner Cloud user data: boot a fresh Ubuntu/Debian server straight into a
+# hardened Dokku host with Caddy. All the work happens in bootstrap.sh, which
+# needs one raw-URL (or copy it over SSH yourself).
+#
+#   hcloud server create --name app --type cx22 --image ubuntu-24.04 \
+#     --ssh-key mykey --user-data-from-file cloud-init.yaml
+#
+# Progress and errors land in /var/log/cloud-init-output.log.
+
+write_files:
+  - path: /etc/infra-vps/bootstrap.env
+    owner: root:root
+    permissions: "0600"
+    content: |
+      # EDIT these values.
+      DOMAIN=example.com
+      ADMIN_USER=admin
+      ACME_EMAIL=you@example.com
+      # Optional: IP/CIDR(s) kept out of fail2ban bans, space separated.
+      ADMIN_IP=
+      # SSH_PORT=22
+      # DOKKU_TAG=v0.38.31
+
+runcmd:
+  # EDIT the URL: raw URL of bootstrap.sh in your repo. Alternative without a
+  # URL: copy the script over SSH and run
+  #   sudo ./bootstrap.sh /etc/infra-vps/bootstrap.env
+  - |
+    set -eux
+    curl -fsSL "https://raw.githubusercontent.com/OWNER/infra-vps/main/bootstrap.sh" \
+      -o /usr/local/sbin/infra-vps-bootstrap.sh
+    chmod 0755 /usr/local/sbin/infra-vps-bootstrap.sh
+    /usr/local/sbin/infra-vps-bootstrap.sh /etc/infra-vps/bootstrap.env
