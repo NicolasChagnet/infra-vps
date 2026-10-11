@@ -29,7 +29,7 @@ runcmd:
   #   sudo ./bootstrap.sh /etc/infra-vps/bootstrap.env
   - |
     set -eux
-    curl -fsSL "https://raw.githubusercontent.com/OWNER/infra-vps/main/bootstrap.sh" \
+    curl -fsSL "https://raw.githubusercontent.com/NicolasChagnet/infra-vps/main/bootstrap.sh" \
       -o /usr/local/sbin/infra-vps-bootstrap.sh
     chmod 0755 /usr/local/sbin/infra-vps-bootstrap.sh
     /usr/local/sbin/infra-vps-bootstrap.sh /etc/infra-vps/bootstrap.env
