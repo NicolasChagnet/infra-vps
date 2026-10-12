@@ -1,14 +1,18 @@
 #cloud-config
 #
 # Hetzner Cloud user data: boot a fresh Ubuntu/Debian server straight into a
-# hardened Dokku host with Caddy.
+# Dokku host with Caddy, ufw and fail2ban.
 #
 # cloud-init owns the declarative parts: the admin user and the packages.
-# bootstrap.sh owns the stateful parts: Dokku, Caddy, ufw, fail2ban, sshd.
-# The script is idempotent, so the same file works with a server that already
-# runs, and you can repeat it over SSH at any time:
+# bootstrap.sh owns the stateful parts: Dokku, Caddy, ufw, fail2ban.
+# Neither touches sshd. Harden sshd later, from a session you already have;
+# README.md has the commands.
+#
+# The script is idempotent, so you can repeat it over SSH at any time:
 #
 #   sudo /usr/local/sbin/infra-vps-bootstrap.sh /etc/infra-vps/bootstrap.env
+#
+# Create the server:
 #
 #   hcloud server create --name app --type cx22 --image ubuntu-24.04 \
 #     --ssh-key mykey --user-data-from-file cloud-init.yaml
@@ -31,6 +35,10 @@ packages:
   - ufw
   - fail2ban
 
+# Keep the root key that Hetzner installs. It is your second way in until you run
+# the hardening step in README.md.
+disable_root: false
+
 write_files:
   - path: /etc/infra-vps/bootstrap.env
     owner: root:root
@@ -42,7 +50,6 @@ write_files:
       ACME_EMAIL=you@example.com
       # Optional: IP/CIDR(s) kept out of fail2ban bans, space separated.
       ADMIN_IP=
-      # SSH_PORT=22
       # DOKKU_TAG=v0.38.31
 
 runcmd:

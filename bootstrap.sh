@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
-# Turn a fresh Debian/Ubuntu VPS into a Dokku host (Caddy proxy) and harden it.
+# Turn a fresh Debian/Ubuntu VPS into a Dokku host (Caddy proxy) and lock it down.
 # Idempotent: safe to re-run.
+#
+# sshd keeps the image defaults on purpose, so a way in always exists. Harden it
+# as a separate step once you confirmed access. README.md has the commands.
 #
 # Usage:
 #   sudo ./bootstrap.sh                          # variables from the environment
@@ -12,7 +15,6 @@
 #   ADMIN_USER          the sudo user you log in as                 (required)
 #   ACME_EMAIL          Let's Encrypt account email, enables TLS    (required)
 #   ADMIN_IP            IP/CIDR(s) whitelisted in fail2ban          (recommended)
-#   SSH_PORT            sshd port                                   (default 22)
 #   DOKKU_TAG           Dokku release to install                    (default v0.38.31)
 #   ADMIN_SSH_KEY_FILE  key seeded for ADMIN_USER when it has no key     (default /root/.ssh/authorized_keys)
 set -euo pipefail
@@ -29,7 +31,6 @@ fi
 : "${DOMAIN:?set DOMAIN, e.g. example.com}"
 : "${ADMIN_USER:?set ADMIN_USER, e.g. admin}"
 : "${ACME_EMAIL:?set ACME_EMAIL, the ACME account email}"
-SSH_PORT=${SSH_PORT:-22}
 ADMIN_IP=${ADMIN_IP:-}
 DOKKU_TAG=${DOKKU_TAG:-v0.38.31}
 ADMIN_SSH_KEY_FILE=${ADMIN_SSH_KEY_FILE:-/root/.ssh/authorized_keys}
@@ -55,9 +56,9 @@ ADMIN_HOME=$(getent passwd "$ADMIN_USER" | cut -d: -f6)
 ADMIN_KEYS="$ADMIN_HOME/.ssh/authorized_keys"
 install -d -m 700 -o "$ADMIN_USER" -g "$ADMIN_USER" "$ADMIN_HOME/.ssh"
 
-# Seed the key only when the account has none. cloud-init writes its own key
-# (hybrid setup), and root's keys must never overwrite that.
-if [[ ! -s $ADMIN_KEYS && -s $ADMIN_SSH_KEY_FILE ]]; then
+# Seed the key from ADMIN_SSH_KEY_FILE when the account has no usable key.
+# cloud-init writes its own key (hybrid setup), and that key must win.
+if ! ssh-keygen -lf "$ADMIN_KEYS" >/dev/null 2>&1 && [[ -s $ADMIN_SSH_KEY_FILE ]]; then
   install -m 600 -o "$ADMIN_USER" -g "$ADMIN_USER" "$ADMIN_SSH_KEY_FILE" "$ADMIN_KEYS"
 fi
 chown "$ADMIN_USER:$ADMIN_USER" "$ADMIN_KEYS" 2>/dev/null || true
@@ -71,45 +72,17 @@ visudo -cf "$SUDOERS.tmp" >/dev/null || die "generated sudoers file is invalid"
 chmod 440 "$SUDOERS.tmp"
 mv "$SUDOERS.tmp" "$SUDOERS"
 
-log "Firewall: deny incoming, allow $SSH_PORT, 80, 443"
+log "Firewall: deny incoming, allow 22, 80, 443"
 ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
-ufw allow "$SSH_PORT"/tcp comment 'ssh' >/dev/null
+ufw allow 22/tcp comment 'ssh' >/dev/null
 ufw allow 80/tcp comment 'http' >/dev/null
 ufw allow 443/tcp comment 'https' >/dev/null
 ufw --force enable >/dev/null
 # Note: ufw does not filter ports published by Docker containers. Dokku only
 # publishes 80/443, but anything you expose with `dokku ports:add` bypasses ufw.
 
-log "Hardening sshd: port $SSH_PORT, key-only, no root login"
-cat >/etc/ssh/sshd_config.d/00-hardening.conf <<EOF
-# Managed by infra-vps/bootstrap.sh
-Port $SSH_PORT
-PermitRootLogin no
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PermitEmptyPasswords no
-X11Forwarding no
-MaxAuthTries 3
-LoginGraceTime 30
-EOF
-sshd -t || die "invalid sshd configuration, ssh not restarted"
-
-# Ubuntu 24.04+ socket-activates sshd: the listening port comes from the socket.
-if systemctl is-enabled --quiet ssh.socket 2>/dev/null || systemctl is-active --quiet ssh.socket 2>/dev/null; then
-  install -d /etc/systemd/system/ssh.socket.d
-  printf '[Socket]\nListenStream=\nListenStream=%s\n' "$SSH_PORT" >/etc/systemd/system/ssh.socket.d/override.conf
-  systemctl daemon-reload
-  systemctl restart ssh.socket
-else
-  systemctl restart ssh 2>/dev/null || systemctl restart sshd
-fi
-
-# Do not walk away from a server nobody can log in to.
-if ! ss -ltn "sport = :$SSH_PORT" | grep -q LISTEN; then
-  ufw allow 22/tcp comment 'ssh fallback' >/dev/null
-  die "sshd is not listening on port $SSH_PORT, port 22 is open again; check sshd and ssh.socket"
-fi
+log "Leaving sshd at its image defaults: your current access keeps working"
 
 log "fail2ban: sshd jail, whitelisted: ${ADMIN_IP:-none}"
 cat >/etc/fail2ban/jail.local <<EOF
@@ -123,7 +96,6 @@ maxretry = 5
 
 [sshd]
 enabled = true
-port    = $SSH_PORT
 EOF
 systemctl enable fail2ban >/dev/null 2>&1 || true
 systemctl restart fail2ban
@@ -156,11 +128,13 @@ log "Bootstrap complete"
 cat <<EOF
   dokku     $(dokku version)
   domains   $DOMAIN, apps are served on <app>.$DOMAIN with automatic TLS
-  ssh       port $SSH_PORT, $ADMIN_USER only, key-only, root login disabled
-  firewall  ufw: deny incoming, allow $SSH_PORT, 80, 443
+  ssh       port 22, unchanged: $ADMIN_USER (sudo) and the root key still work
+  firewall  ufw: deny incoming, allow 22, 80, 443
   fail2ban  sshd jail, whitelist: 127.0.0.1/8 ::1 ${ADMIN_IP}
 
   Next:
     1. point $DOMAIN and *.$DOMAIN (A/AAAA) at this server
-    2. git remote add dokku dokku@$DOMAIN:myapp && git push dokku main
+    2. log in as $ADMIN_USER once, from a second terminal, before you log out
+    3. harden sshd: README.md, "Harden SSH after you confirmed access"
+    4. git remote add dokku dokku@$DOMAIN:myapp && git push dokku main
 EOF
