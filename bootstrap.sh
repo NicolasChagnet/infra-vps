@@ -14,7 +14,7 @@
 #   ADMIN_IP            IP/CIDR(s) whitelisted in fail2ban          (recommended)
 #   SSH_PORT            sshd port                                   (default 22)
 #   DOKKU_TAG           Dokku release to install                    (default v0.38.31)
-#   ADMIN_SSH_KEY_FILE  public key(s) authorized for ADMIN_USER     (default /root/.ssh/authorized_keys)
+#   ADMIN_SSH_KEY_FILE  key seeded for ADMIN_USER when it has no key     (default /root/.ssh/authorized_keys)
 set -euo pipefail
 
 ENV_FILE=${1:-}
@@ -52,19 +52,18 @@ log "Admin user $ADMIN_USER"
 id -u "$ADMIN_USER" >/dev/null 2>&1 || adduser --disabled-password --gecos "" "$ADMIN_USER"
 usermod -aG sudo "$ADMIN_USER"
 ADMIN_HOME=$(getent passwd "$ADMIN_USER" | cut -d: -f6)
+ADMIN_KEYS="$ADMIN_HOME/.ssh/authorized_keys"
 install -d -m 700 -o "$ADMIN_USER" -g "$ADMIN_USER" "$ADMIN_HOME/.ssh"
 
-# Add the keys, keeping any keys already authorized for this user.
-if [[ -s $ADMIN_SSH_KEY_FILE ]]; then
-  while IFS= read -r key; do
-    [[ -n $key ]] || continue
-    grep -qxF "$key" "$ADMIN_HOME/.ssh/authorized_keys" 2>/dev/null || echo "$key" >>"$ADMIN_HOME/.ssh/authorized_keys"
-  done <"$ADMIN_SSH_KEY_FILE"
+# Seed the key only when the account has none. cloud-init writes its own key
+# (hybrid setup), and root's keys must never overwrite that.
+if [[ ! -s $ADMIN_KEYS && -s $ADMIN_SSH_KEY_FILE ]]; then
+  install -m 600 -o "$ADMIN_USER" -g "$ADMIN_USER" "$ADMIN_SSH_KEY_FILE" "$ADMIN_KEYS"
 fi
-chown "$ADMIN_USER:$ADMIN_USER" "$ADMIN_HOME/.ssh/authorized_keys" 2>/dev/null || true
-chmod 600 "$ADMIN_HOME/.ssh/authorized_keys" 2>/dev/null || true
-[[ -s $ADMIN_HOME/.ssh/authorized_keys ]] ||
-  die "no public key for $ADMIN_USER: put one in $ADMIN_SSH_KEY_FILE, or set ADMIN_SSH_KEY_FILE"
+chown "$ADMIN_USER:$ADMIN_USER" "$ADMIN_KEYS" 2>/dev/null || true
+chmod 600 "$ADMIN_KEYS" 2>/dev/null || true
+ssh-keygen -lf "$ADMIN_KEYS" >/dev/null 2>&1 ||
+  die "no valid public key for $ADMIN_USER in $ADMIN_KEYS: fill in the key or set ADMIN_SSH_KEY_FILE"
 
 SUDOERS=/etc/sudoers.d/90-infra-vps
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$ADMIN_USER" >"$SUDOERS.tmp"
@@ -135,17 +134,17 @@ else
   log "Installing Dokku $DOKKU_TAG"
   hostname -f >/dev/null 2>&1 || echo "127.0.1.1 $(hostname)" >>/etc/hosts
   curl -fsSL "https://dokku.com/install/$DOKKU_TAG/bootstrap.sh" -o /tmp/dokku-bootstrap.sh
-  DOKKU_TAG="$DOKKU_TAG" DOKKU_KEY_FILE="$ADMIN_HOME/.ssh/authorized_keys" bash /tmp/dokku-bootstrap.sh
+  DOKKU_TAG="$DOKKU_TAG" DOKKU_KEY_FILE="$ADMIN_KEYS" bash /tmp/dokku-bootstrap.sh
 fi
 
 log "Configuring Dokku: domain $DOMAIN, caddy proxy, TLS for $ACME_EMAIL"
 dokku domains:set-global "$DOMAIN" >/dev/null
 dokku proxy:set --global type caddy >/dev/null
 
-FP=$(ssh-keygen -lf "$ADMIN_HOME/.ssh/authorized_keys" | head -1 | awk '{print $2}')
+FP=$(ssh-keygen -lf "$ADMIN_KEYS" | head -1 | awk '{print $2}')
 if ! dokku ssh-keys:list 2>/dev/null | grep -q "$FP"; then
-  dokku ssh-keys:add admin "$ADMIN_HOME/.ssh/authorized_keys" >/dev/null ||
-    log "warning: could not register the admin key, run: dokku ssh-keys:add admin $ADMIN_HOME/.ssh/authorized_keys"
+  dokku ssh-keys:add admin "$ADMIN_KEYS" >/dev/null ||
+    log "warning: could not register the admin key, run: dokku ssh-keys:add admin $ADMIN_KEYS"
 fi
 
 dokku caddy:set --global letsencrypt-email "$ACME_EMAIL" >/dev/null

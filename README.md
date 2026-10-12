@@ -2,8 +2,8 @@
 
 Two files turn a fresh VPS into a hardened Dokku host with Caddy and automatic HTTPS.
 
-- `bootstrap.sh` does all the work. It is idempotent, so you can re-run it.
-- `cloud-init.yaml` writes the config file and runs `bootstrap.sh` at server provisioning on Hetzner Cloud.
+- `bootstrap.sh` does the stateful work: Dokku, Caddy, ufw, fail2ban, sshd. It is idempotent, so you can re-run it.
+- `cloud-init.yaml` declares the admin user, updates the package list, writes the config file, and runs `bootstrap.sh` at server provisioning on Hetzner Cloud.
 
 ## What you get
 
@@ -18,13 +18,13 @@ Two files turn a fresh VPS into a hardened Dokku host with Caddy and automatic H
 2. A DNS zone you control (a Hetzner DNS zone works). Two records point at the server IP:
    - `A` for `example.com`.
    - `A` for `*.example.com`. The wildcard gives every app its own subdomain.
-3. An SSH key pair. On Hetzner, select the public key when you create the server. The script copies `/root/.ssh/authorized_keys` to the admin user.
+3. An SSH key pair. On the cloud-init path, paste the public key into `cloud-init.yaml`. On the script path, the script seeds the admin account from `/root/.ssh/authorized_keys`, which is where Hetzner puts the key you select at server creation.
 4. The variables below. Put them in the env file, or pass them as environment variables.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
 | `DOMAIN` | yes | Global Dokku domain, for example `example.com`. Apps answer on `<app>.example.com`. |
-| `ADMIN_USER` | yes | The sudo user you log in as. The script creates it if it does not exist. |
+| `ADMIN_USER` | yes | The sudo user you log in as. The script creates it when it does not exist, so it must match the `users:` name in `cloud-init.yaml`. |
 | `ACME_EMAIL` | yes | Let's Encrypt account email. TLS is off without it. |
 | `ADMIN_IP` | no | IP or CIDR that fail2ban never bans. Space-separated for several. |
 | `SSH_PORT` | no | sshd port. Default `22`. |
@@ -34,7 +34,7 @@ Two files turn a fresh VPS into a hardened Dokku host with Caddy and automatic H
 ## Use cloud-init at server creation
 
 1. Push this repository to a Git remote. The server downloads `bootstrap.sh` over HTTPS, so the raw URL must work without authentication.
-2. Edit `cloud-init.yaml`. Set the variable values and the raw URL of `bootstrap.sh`.
+2. Edit `cloud-init.yaml`: the user name and public key under `users:`, the variable values, and the raw URL of `bootstrap.sh`.
 3. Create the server with the file as user data:
 
    ```shell
@@ -94,6 +94,7 @@ dokku logs myapp
 - **Caddy replaces nginx.** The script stops nginx because both bind port 80 and 443. Do not start nginx again.
 - **TLS uses HTTP-01 challenges.** Port 80 stays open to the world. Each new app subdomain needs its own certificate, so the first request may take a few seconds.
 - **ufw does not filter Docker ports.** A container published with `dokku ports:add` is reachable from the internet even when ufw denies the port.
+- **cloud-init creates the admin user before the script runs.** The script seeds a key only when the account has none. The key from `cloud-init.yaml` therefore stays. If no valid public key is present, the script stops with an error and leaves password authentication alone.
 - **Re-running is safe.** The script skips the Dokku install when Dokku is present. To upgrade Dokku, use `apt-get install dokku` or `dokku-update`.
 - **The script handles a changed `SSH_PORT`.** Ubuntu 24.04 activates sshd through `ssh.socket`, so the script writes a socket drop-in. The script then checks the listener. If nothing listens, it opens port 22 again and stops with an error.
 - **Keep console access.** Hetzner gives you a console in the web interface. It is your way back in after a bad SSH change.

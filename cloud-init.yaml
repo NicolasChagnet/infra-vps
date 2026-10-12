@@ -1,13 +1,35 @@
 #cloud-config
 #
 # Hetzner Cloud user data: boot a fresh Ubuntu/Debian server straight into a
-# hardened Dokku host with Caddy. All the work happens in bootstrap.sh, which
-# needs one raw-URL (or copy it over SSH yourself).
+# hardened Dokku host with Caddy.
+#
+# cloud-init owns the declarative parts: the admin user and the packages.
+# bootstrap.sh owns the stateful parts: Dokku, Caddy, ufw, fail2ban, sshd.
+# The script is idempotent, so the same file works with a server that already
+# runs, and you can repeat it over SSH at any time:
+#
+#   sudo /usr/local/sbin/infra-vps-bootstrap.sh /etc/infra-vps/bootstrap.env
 #
 #   hcloud server create --name app --type cx22 --image ubuntu-24.04 \
 #     --ssh-key mykey --user-data-from-file cloud-init.yaml
 #
 # Progress and errors land in /var/log/cloud-init-output.log.
+
+users:
+  # EDIT: the user name must match ADMIN_USER in bootstrap.env below.
+  - name: admin
+    groups: [adm, sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      # EDIT: your public key, on one line (ssh-ed25519 ... or ssh-rsa ...).
+      - ssh-ed25519 AAAA...replace-me
+
+package_update: true
+packages:
+  - ufw
+  - fail2ban
 
 write_files:
   - path: /etc/infra-vps/bootstrap.env
@@ -24,12 +46,10 @@ write_files:
       # DOKKU_TAG=v0.38.31
 
 runcmd:
-  # EDIT the URL: raw URL of bootstrap.sh in your repo. Alternative without a
-  # URL: copy the script over SSH and run
-  #   sudo ./bootstrap.sh /etc/infra-vps/bootstrap.env
+  # EDIT the URL: raw URL of bootstrap.sh in your repo.
   - |
     set -eux
-    curl -fsSL "https://raw.githubusercontent.com/NicolasChagnet/infra-vps/main/bootstrap.sh" \
+    curl -fsSL "https://raw.githubusercontent.com/OWNER/infra-vps/main/bootstrap.sh" \
       -o /usr/local/sbin/infra-vps-bootstrap.sh
     chmod 0755 /usr/local/sbin/infra-vps-bootstrap.sh
     /usr/local/sbin/infra-vps-bootstrap.sh /etc/infra-vps/bootstrap.env
